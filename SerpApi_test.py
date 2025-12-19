@@ -583,6 +583,8 @@ class SerpAPITester:
         Worker thread: continuously sends requests until the deadline without adding new overtime requests.
         """
         worker_results = []
+        if concurrency <= 0:
+            return worker_results
         if target_qps and target_qps > 0:
             worker_qps = target_qps / concurrency
             min_interval = 1.0 / worker_qps
@@ -610,7 +612,8 @@ class SerpAPITester:
                 if next_allowed_time is not None and now < next_allowed_time:
                     time.sleep(next_allowed_time - now)
                     now = time.perf_counter()
-                next_allowed_time = now + min_interval
+                target_time = next_allowed_time if next_allowed_time and next_allowed_time > now else now
+                next_allowed_time = target_time + min_interval
 
             if not reserve_request():
                 break
