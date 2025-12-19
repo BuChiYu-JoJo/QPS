@@ -18,6 +18,7 @@ from datetime import datetime
 from collections import defaultdict
 import ssl
 import math
+import threading
 
 
 class SerpAPITester:
@@ -532,7 +533,29 @@ class SerpAPITester:
 
         return ", ".join(summary_parts) if summary_parts else "Success"
 
-    def run_concurrent_test(self, engine, duration_seconds, concurrency, query=None):
+    def _get_next_query_fn(self, engine, explicit_query):
+        """
+        为给定引擎创建获取下一个查询的函数，支持显式查询、引擎专属关键词和轮询关键词池。
+        """
+        if explicit_query is not None:
+            return lambda: explicit_query
+
+        engine_pool = self.engine_keywords.get(engine)
+        if engine_pool:
+            return lambda: random.choice(engine_pool)
+
+        pool = self.keyword_pool
+        cycle_iter = itertools.cycle(pool)
+        lock = threading.Lock()
+
+        def round_robin_query():
+            with lock:
+                return next(cycle_iter)
+
+        return round_robin_query
+
+    def run_concurrent_test(self, engine, duration_seconds, concurrency, query=None,
+                           target_qps=None, max_requests=None):
         """
         运行并发性能测试
 
@@ -545,27 +568,23 @@ class SerpAPITester:
         Returns:
             tuple: (所有请求结果, 总耗时, 总请求数)
         """
+        if concurrency <= 0:
+            raise ValueError("并发数必须大于0")
         results = []
         start_monotonic = time.perf_counter()
         end_time = start_monotonic + duration_seconds
-        keyword_source = self.engine_keywords.get(engine, self.keyword_pool) if query is None else None
-        special_engines = {"google_lens", "google_flights", "google_trends", "google_hotels", "google_maps"}
-        use_round_robin = query is None and engine not in special_engines
-        request_counter = itertools.count() if use_round_robin else None
-
-        # 如果未指定query，按引擎配置选择关键词
-        def next_query():
-            if query is not None:
-                return query
-            if engine in special_engines:
-                return random.choice(keyword_source)
-            idx = next(request_counter)
-            return keyword_source[idx % len(keyword_source)]
+        next_query_fn = self._get_next_query_fn(engine, query)
+        request_counter = {"count": 0} if max_requests else None
+        counter_lock = threading.Lock() if max_requests else None
 
         print(f"\n开始测试引擎: {engine}")
         print(f"  运行时间: {duration_seconds}秒")
         print(f"  并发数: {concurrency}")
         print(f"  缓存: 禁用 (no_cache=true)")
+        if target_qps or max_requests:
+            print(f"  目标QPS: {target_qps if target_qps else 'Unlimited'}")
+            if max_requests:
+                print(f"  最大请求数: {max_requests}")
         print("-" * 80)
 
         # 记录并发测试的总开始时间
@@ -575,7 +594,17 @@ class SerpAPITester:
         with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
             # 提交并发工作线程
             futures = [
-                executor.submit(self._run_worker_until, engine, next_query, end_time)
+                executor.submit(
+                    self._run_worker_until,
+                    engine,
+                    next_query_fn,
+                    end_time,
+                    concurrency,
+                    target_qps,
+                    max_requests,
+                    request_counter,
+                    counter_lock
+                )
                 for _ in range(concurrency)
             ]
 
@@ -596,27 +625,57 @@ class SerpAPITester:
 
         return results, total_duration, total_requests
 
-    def _run_worker_until(self, engine, next_query_fn, end_time):
+    def _run_worker_until(self, engine, next_query_fn, end_time, concurrency,
+                          target_qps=None, max_requests=None, request_counter=None, counter_lock=None):
         """
         Worker 线程：在截止时间前持续发送请求，不再新增超时请求
         """
         worker_results = []
+        if target_qps and target_qps > 0:
+            worker_qps = target_qps / concurrency
+            min_interval = 1.0 / worker_qps
+        else:
+            worker_qps = None
+            min_interval = 0
+        last_request_time = time.perf_counter()
+        next_allowed_time = last_request_time + min_interval if worker_qps else None
+
+        def reserve_request():
+            if not max_requests or request_counter is None or counter_lock is None:
+                return True
+            with counter_lock:
+                request_counter["count"] += 1
+                return request_counter["count"] <= max_requests
+
         current_time = time.perf_counter()
         if current_time >= end_time:
             return worker_results
 
         while True:
-            current_time = time.perf_counter()
-            if current_time >= end_time:
+            now = time.perf_counter()
+            if worker_qps:
+                if next_allowed_time is not None and now < next_allowed_time:
+                    time.sleep(next_allowed_time - now)
+                    now = time.perf_counter()
+                next_allowed_time = now + min_interval
+
+            last_request_time = now
+            if last_request_time >= end_time:
                 break
+
+            if not reserve_request():
+                break
+
             result = self.make_request(engine, next_query_fn())
             worker_results.append(result)
+
             current_time = time.perf_counter()
             if current_time >= end_time:
                 break
         return worker_results
 
-    def run_all_engines_test(self, engines, duration_seconds, concurrency):
+    def run_all_engines_test(self, engines, duration_seconds, concurrency,
+                             query=None, target_qps=None, max_requests=None):
         """
         测试多个引擎的性能
 
@@ -638,7 +697,8 @@ class SerpAPITester:
         for engine in engines:
             try:
                 results, total_duration, total_requests = self.run_concurrent_test(
-                    engine, duration_seconds, concurrency
+                    engine, duration_seconds, concurrency, query,
+                    target_qps, max_requests
                 )
 
                 all_results[engine] = results
@@ -646,7 +706,7 @@ class SerpAPITester:
                 # 计算统计数据
                 stats = self._calculate_statistics(
                     'Thordata', engine, results, total_requests,
-                    concurrency, total_duration
+                    concurrency, total_duration, target_qps
                 )
                 all_statistics.append(stats)
 
@@ -666,7 +726,7 @@ class SerpAPITester:
         return round((total_requests - success_count) / total_requests * 100, 2)
 
     def _calculate_statistics(self, product, engine, results, total_requests,
-                              concurrency, total_duration):
+                              concurrency, total_duration, target_qps=None):
         """
         计算统计数据
 
@@ -725,6 +785,7 @@ class SerpAPITester:
             '请求总数': total_requests,
             '并发数': concurrency,
             '请求速率(req/s)': request_rate,
+            '目标QPS': target_qps if target_qps else 'Unlimited',
             '成功次数': success_count,
             '成功率(%)': success_rate,
             '错误率(%)': error_rate,
@@ -815,7 +876,7 @@ class SerpAPITester:
             return
 
         fieldnames = [
-            '产品类别', '引擎', '请求总数', '并发数', '请求速率(req/s)',
+            '产品类别', '引擎', '请求总数', '并发数', '请求速率(req/s)', '目标QPS',
             '成功次数', '成功率(%)', '错误率(%)', '成功平均响应时间(s)',
             'P50延迟(s)', 'P75延迟(s)', 'P90延迟(s)', 'P95延迟(s)', 'P99延迟(s)',
             '并发完成时间(s)', '成功平均响应大小(KB)'
@@ -844,7 +905,7 @@ class SerpAPITester:
         """
         print("\n汇总统计表:")
         header = f"{'引擎':<20} {'请求数':>8} {'并发':>6} {'速率(req/s)':>12} " \
-                 f"{'成功':>8} {'成功率':>8} {'错误率':>8} {'平均响应(s)':>12} " \
+                 f"{'目标QPS':>12} {'成功':>8} {'成功率':>8} {'错误率':>8} {'平均响应(s)':>12} " \
                  f"{'P50延迟(s)':>11} {'P75延迟(s)':>11} {'P90延迟(s)':>11} {'P95延迟(s)':>11} {'P99延迟(s)':>11} " \
                  f"{'完成时间(s)':>12} {'响应大小(KB)':>14}"
         table_width = len(header)
@@ -855,7 +916,7 @@ class SerpAPITester:
         # 打印数据行
         for stat in statistics:
             row = f"{stat['引擎']:<20} {stat['请求总数']:>8} {stat['并发数']:>6} " \
-                  f"{stat['请求速率(req/s)']:>12} {stat['成功次数']:>8} " \
+                  f"{stat['请求速率(req/s)']:>12} {stat['目标QPS']:>12} {stat['成功次数']:>8} " \
                   f"{stat['成功率(%)']:>7}% {stat['错误率(%)']:>7}% {stat['成功平均响应时间(s)']:>12} " \
                   f"{stat['P50延迟(s)']:>11} {stat['P75延迟(s)']:>11} {stat['P90延迟(s)']:>11} {stat['P95延迟(s)']:>11} {stat['P99延迟(s)']:>11} " \
                   f"{stat['并发完成时间(s)']:>12} {stat['成功平均响应大小(KB)']:>14}"
@@ -901,6 +962,10 @@ def main():
                         help='搜索关键词 (默认: 随机)')
     parser.add_argument('--save-details', action='store_true',
                         help='保存每个请求的详细CSV记录')
+    parser.add_argument('--target-qps', type=float,
+                        help='目标请求速率 (QPS)，设置后按QPS节流')
+    parser.add_argument('--max-requests', type=int,
+                        help='最大请求总数，与目标QPS组合以控制成本')
     parser.add_argument('-o', '--output', type=str,
                         default='serpapi_summary_statistics.csv',
                         help='汇总统计表输出文件名')
@@ -940,6 +1005,14 @@ def main():
     # 创建测试器
     tester = SerpAPITester(args.api_key, save_details=args.save_details)
 
+    if args.target_qps or args.max_requests:
+        print("\n=== 经济模式已启用 ===")
+        if args.target_qps:
+            print(f"目标 QPS: {args.target_qps}")
+        if args.max_requests:
+            print(f"最大请求数: {args.max_requests}")
+        print("====================\n")
+
     # 运行测试：支持连续并发配置
     concurrency_list = args.concurrency_steps if args.concurrency_steps else [args.concurrency]
     all_results = {}
@@ -948,7 +1021,8 @@ def main():
     for conc in concurrency_list:
         print(f"\n==== 开始并发 {conc} 的测试 ====")
         results, statistics = tester.run_all_engines_test(
-            engines, args.duration, conc
+            engines, args.duration, conc, args.query,
+            args.target_qps, args.max_requests
         )
         # 合并结果
         all_results.update(results)
