@@ -580,7 +580,7 @@ class SerpAPITester:
         print(f"  并发数: {concurrency}")
         print(f"  缓存: 禁用 (no_cache=true)")
         if target_qps or max_requests:
-            print(f"  目标QPS: {target_qps if target_qps else '无限制'}")
+            print(f"  目标QPS: {target_qps if target_qps else 'Unlimited'}")
             if max_requests:
                 print(f"  最大请求数: {max_requests}")
         print("-" * 80)
@@ -629,7 +629,7 @@ class SerpAPITester:
         Worker 线程：在截止时间前持续发送请求，不再新增超时请求
         """
         worker_results = []
-        worker_qps = target_qps / concurrency if target_qps and target_qps > 0 and concurrency > 0 else None
+        worker_qps = target_qps / concurrency if concurrency > 0 and target_qps and target_qps > 0 else None
         min_interval = 1.0 / worker_qps if worker_qps else 0
         last_request_time = time.perf_counter()
 
@@ -787,7 +787,7 @@ class SerpAPITester:
             '请求总数': total_requests,
             '并发数': concurrency,
             '请求速率(req/s)': request_rate,
-            '目标QPS': target_qps if target_qps else '无限制',
+            '目标QPS': target_qps if target_qps else 'Unlimited',
             '成功次数': success_count,
             '成功率(%)': success_rate,
             '错误率(%)': error_rate,
