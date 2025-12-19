@@ -572,7 +572,7 @@ class SerpAPITester:
         start_monotonic = time.perf_counter()
         end_time = start_monotonic + duration_seconds
         next_query_fn = self._get_next_query_fn(engine, query)
-        request_counter = [] if max_requests else None
+        request_counter = {"count": 0} if max_requests else None
         counter_lock = threading.Lock() if max_requests else None
 
         print(f"\n开始测试引擎: {engine}")
@@ -629,18 +629,32 @@ class SerpAPITester:
         Worker 线程：在截止时间前持续发送请求，不再新增超时请求
         """
         worker_results = []
-        worker_qps = target_qps / concurrency if target_qps else None
+        worker_qps = target_qps / concurrency if target_qps and target_qps > 0 and concurrency > 0 else None
         min_interval = 1.0 / worker_qps if worker_qps else 0
         last_request_time = time.perf_counter()
+
+        def limit_reached():
+            if not max_requests or request_counter is None or counter_lock is None:
+                return False
+            with counter_lock:
+                return request_counter["count"] >= max_requests
+
+        def reserve_request():
+            if not max_requests or request_counter is None or counter_lock is None:
+                return True
+            with counter_lock:
+                if request_counter["count"] >= max_requests:
+                    return False
+                request_counter["count"] += 1
+                return True
+
         current_time = time.perf_counter()
         if current_time >= end_time:
             return worker_results
 
         while True:
-            if max_requests and request_counter is not None and counter_lock is not None:
-                with counter_lock:
-                    if len(request_counter) >= max_requests:
-                        break
+            if limit_reached():
+                break
 
             if worker_qps:
                 elapsed = time.perf_counter() - last_request_time
@@ -651,11 +665,8 @@ class SerpAPITester:
             if last_request_time >= end_time:
                 break
 
-            if max_requests and request_counter is not None and counter_lock is not None:
-                with counter_lock:
-                    if len(request_counter) >= max_requests:
-                        break
-                    request_counter.append(1)
+            if not reserve_request():
+                break
 
             result = self.make_request(engine, next_query_fn())
             worker_results.append(result)
@@ -907,7 +918,7 @@ class SerpAPITester:
         # 打印数据行
         for stat in statistics:
             row = f"{stat['引擎']:<20} {stat['请求总数']:>8} {stat['并发数']:>6} " \
-                  f"{stat['请求速率(req/s)']:>12} {str(stat['目标QPS']):>12} {stat['成功次数']:>8} " \
+                  f"{stat['请求速率(req/s)']:>12} {stat['目标QPS']:>12} {stat['成功次数']:>8} " \
                   f"{stat['成功率(%)']:>7}% {stat['错误率(%)']:>7}% {stat['成功平均响应时间(s)']:>12} " \
                   f"{stat['P50延迟(s)']:>11} {stat['P75延迟(s)']:>11} {stat['P90延迟(s)']:>11} {stat['P95延迟(s)']:>11} {stat['P99延迟(s)']:>11} " \
                   f"{stat['并发完成时间(s)']:>12} {stat['成功平均响应大小(KB)']:>14}"
