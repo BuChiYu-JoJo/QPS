@@ -595,10 +595,10 @@ class SerpAPITester:
             if not max_requests or request_counter is None or counter_lock is None:
                 return True
             with counter_lock:
-                if request_counter["count"] >= max_requests:
-                    return False
-                request_counter["count"] += 1
-                return True
+                can_send = request_counter["count"] < max_requests
+                if can_send:
+                    request_counter["count"] += 1
+                return can_send
 
         while True:
             now = time.perf_counter()
@@ -875,7 +875,7 @@ def main():
     parser.add_argument('-k', '--api-key', type=str,
                         help='SerpAPI认证密钥')
     parser.add_argument('-e', '--engines', type=str, nargs='+',
-                         help='要测试的搜索引擎列表')
+                        help='要测试的搜索引擎列表')
     parser.add_argument('--all-engines', action='store_true',
                         help='测试所有支持的引擎')
     parser.add_argument('-t', '--duration', type=int, default=60,
