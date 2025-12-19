@@ -595,10 +595,11 @@ class SerpAPITester:
             if not max_requests or request_counter is None or counter_lock is None:
                 return True
             with counter_lock:
-                can_send = request_counter["count"] < max_requests
-                if can_send:
-                    request_counter["count"] += 1
-                return can_send
+                request_counter["count"] += 1
+                if request_counter["count"] > max_requests:
+                    request_counter["count"] -= 1
+                    return False
+                return True
 
         while True:
             now = time.perf_counter()
