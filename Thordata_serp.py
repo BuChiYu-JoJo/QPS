@@ -634,17 +634,18 @@ class SerpAPITester:
         worker_results = []
         if concurrency > 0 and target_qps and target_qps > 0:
             worker_qps = target_qps / concurrency
-            min_interval = 1.0 / worker_qps if worker_qps > 0 else 0
+            min_interval = 1.0 / worker_qps
         else:
             worker_qps = None
             min_interval = 0
         last_request_time = time.perf_counter()
+        next_allowed_time = last_request_time + min_interval if worker_qps else None
 
         def reserve_request():
             if not max_requests or request_counter is None or counter_lock is None:
                 return True
             with counter_lock:
-                if request_counter["count"] >= max_requests:
+                if request_counter["count"] + 1 > max_requests:
                     return False
                 request_counter["count"] += 1
                 return True
@@ -656,10 +657,10 @@ class SerpAPITester:
         while True:
             now = time.perf_counter()
             if worker_qps:
-                elapsed = now - last_request_time
-                if elapsed < min_interval:
-                    time.sleep(min_interval - elapsed)
+                if next_allowed_time is not None and now < next_allowed_time:
+                    time.sleep(next_allowed_time - now)
                     now = time.perf_counter()
+                next_allowed_time = now + min_interval
 
             last_request_time = now
             if last_request_time >= end_time:
