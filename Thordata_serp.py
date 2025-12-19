@@ -544,15 +544,16 @@ class SerpAPITester:
         if engine_pool:
             return lambda: random.choice(engine_pool)
 
-        pool = self.keyword_pool
-        cycle_iter = itertools.cycle(pool)
-        lock = threading.Lock()
+        else:
+            pool = self.keyword_pool
+            cycle_iter = itertools.cycle(pool)
+            lock = threading.Lock()
 
-        def round_robin_query():
-            with lock:
-                return next(cycle_iter)
+            def round_robin_query():
+                with lock:
+                    return next(cycle_iter)
 
-        return round_robin_query
+            return round_robin_query
 
     def run_concurrent_test(self, engine, duration_seconds, concurrency, query=None,
                            target_qps=None, max_requests=None):
@@ -629,8 +630,12 @@ class SerpAPITester:
         Worker 线程：在截止时间前持续发送请求，不再新增超时请求
         """
         worker_results = []
-        worker_qps = target_qps / concurrency if concurrency > 0 and target_qps and target_qps > 0 else None
-        min_interval = 1.0 / worker_qps if worker_qps and worker_qps > 0 else 0
+        if concurrency > 0 and target_qps and target_qps > 0:
+            worker_qps = target_qps / concurrency
+            min_interval = 1.0 / worker_qps if worker_qps > 0 else 0
+        else:
+            worker_qps = None
+            min_interval = 0
         last_request_time = time.perf_counter()
 
         def reserve_request():
@@ -647,12 +652,14 @@ class SerpAPITester:
             return worker_results
 
         while True:
+            now = time.perf_counter()
             if worker_qps:
-                elapsed = time.perf_counter() - last_request_time
+                elapsed = now - last_request_time
                 if elapsed < min_interval:
                     time.sleep(min_interval - elapsed)
+                    now = time.perf_counter()
 
-            last_request_time = time.perf_counter()
+            last_request_time = now
             if last_request_time >= end_time:
                 break
 
