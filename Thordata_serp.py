@@ -630,14 +630,8 @@ class SerpAPITester:
         """
         worker_results = []
         worker_qps = target_qps / concurrency if concurrency > 0 and target_qps and target_qps > 0 else None
-        min_interval = 1.0 / worker_qps if worker_qps else 0
+        min_interval = 1.0 / worker_qps if worker_qps and worker_qps > 0 else 0
         last_request_time = time.perf_counter()
-
-        def limit_reached():
-            if not max_requests or request_counter is None or counter_lock is None:
-                return False
-            with counter_lock:
-                return request_counter["count"] >= max_requests
 
         def reserve_request():
             if not max_requests or request_counter is None or counter_lock is None:
@@ -653,9 +647,6 @@ class SerpAPITester:
             return worker_results
 
         while True:
-            if limit_reached():
-                break
-
             if worker_qps:
                 elapsed = time.perf_counter() - last_request_time
                 if elapsed < min_interval:
