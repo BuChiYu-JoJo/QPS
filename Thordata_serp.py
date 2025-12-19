@@ -544,16 +544,15 @@ class SerpAPITester:
         if engine_pool:
             return lambda: random.choice(engine_pool)
 
-        else:
-            pool = self.keyword_pool
-            cycle_iter = itertools.cycle(pool)
-            lock = threading.Lock()
+        pool = self.keyword_pool
+        cycle_iter = itertools.cycle(pool)
+        lock = threading.Lock()
 
-            def round_robin_query():
-                with lock:
-                    return next(cycle_iter)
+        def round_robin_query():
+            with lock:
+                return next(cycle_iter)
 
-            return round_robin_query
+        return round_robin_query
 
     def run_concurrent_test(self, engine, duration_seconds, concurrency, query=None,
                            target_qps=None, max_requests=None):
@@ -632,7 +631,7 @@ class SerpAPITester:
         Worker 线程：在截止时间前持续发送请求，不再新增超时请求
         """
         worker_results = []
-        if concurrency > 0 and target_qps and target_qps > 0:
+        if target_qps and target_qps > 0:
             worker_qps = target_qps / concurrency
             min_interval = 1.0 / worker_qps
         else:
@@ -645,10 +644,8 @@ class SerpAPITester:
             if not max_requests or request_counter is None or counter_lock is None:
                 return True
             with counter_lock:
-                if request_counter["count"] + 1 > max_requests:
-                    return False
                 request_counter["count"] += 1
-                return True
+                return request_counter["count"] <= max_requests
 
         current_time = time.perf_counter()
         if current_time >= end_time:
