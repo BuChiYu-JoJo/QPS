@@ -491,7 +491,8 @@ class SerpAPITester:
 
     def _get_next_query_fn(self, engine, explicit_query):
         """
-        为给定引擎创建获取下一个查询的函数，支持显式查询、引擎专属关键词和轮询关键词池。
+        Create a query provider for the given engine, supporting explicit queries,
+        engine-specific keyword pools, or a round-robin fallback pool.
         """
         if explicit_query is not None:
             return lambda: explicit_query
@@ -525,7 +526,7 @@ class SerpAPITester:
             tuple: (所有请求结果, 总耗时, 总请求数)
         """
         if concurrency <= 0:
-            raise ValueError("并发数必须大于0")
+            raise ValueError("Concurrency must be greater than 0")
         results = []
         start_monotonic = time.perf_counter()
         end_time = start_monotonic + duration_seconds
@@ -579,7 +580,7 @@ class SerpAPITester:
     def _run_worker_until(self, engine, next_query_fn, end_time, concurrency,
                           target_qps=None, max_requests=None, request_counter=None, counter_lock=None):
         """
-        Worker 线程：在截止时间前持续发送请求，不再新增超时请求
+        Worker thread: continuously sends requests until the deadline without adding new overtime requests.
         """
         worker_results = []
         if target_qps and target_qps > 0:
@@ -588,8 +589,8 @@ class SerpAPITester:
         else:
             worker_qps = None
             min_interval = 0
-        last_request_time = time.perf_counter()
-        next_allowed_time = last_request_time + min_interval if worker_qps else None
+        start_time = time.perf_counter()
+        next_allowed_time = start_time + min_interval if worker_qps else None
 
         def reserve_request():
             if not max_requests or request_counter is None or counter_lock is None:
@@ -603,25 +604,19 @@ class SerpAPITester:
 
         while True:
             now = time.perf_counter()
+            if now >= end_time:
+                break
             if worker_qps:
                 if next_allowed_time is not None and now < next_allowed_time:
                     time.sleep(next_allowed_time - now)
                     now = time.perf_counter()
                 next_allowed_time = now + min_interval
 
-            last_request_time = now
-            if last_request_time >= end_time:
-                break
-
             if not reserve_request():
                 break
 
             result = self.make_request(engine, next_query_fn())
             worker_results.append(result)
-
-            current_time = time.perf_counter()
-            if current_time >= end_time:
-                break
         return worker_results
 
     def run_all_engines_test(self, engines, duration_seconds, concurrency,
@@ -771,7 +766,7 @@ class SerpAPITester:
 
     def _normalize_timestamp_str(self, ts):
         """
-        将各种格式的时间值标准化为 YYYY-MM-DD HH:MM:SS
+        Normalize various timestamp formats into YYYY-MM-DD HH:MM:SS.
         """
         if ts is None:
             return ""
