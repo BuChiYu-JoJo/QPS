@@ -595,12 +595,10 @@ class SerpAPITester:
             if not max_requests or request_counter is None or counter_lock is None:
                 return True
             with counter_lock:
+                if request_counter["count"] >= max_requests:
+                    return False
                 request_counter["count"] += 1
-                return request_counter["count"] <= max_requests
-
-        current_time = time.perf_counter()
-        if current_time >= end_time:
-            return worker_results
+                return True
 
         while True:
             now = time.perf_counter()
@@ -669,11 +667,6 @@ class SerpAPITester:
 
         return all_results, all_statistics
 
-    def _compute_error_rate(self, success_count, total_requests):
-        if total_requests <= 0:
-            return 0
-        return round((total_requests - success_count) / total_requests * 100, 2)
-
     def _calculate_statistics(self, product, engine, results, total_requests,
                               concurrency, total_duration, target_qps=None):
         """
@@ -683,7 +676,6 @@ class SerpAPITester:
             dict: 统计数据
         """
         successful_results = [r for r in results if r['success']]
-        failed_results = [r for r in results if not r['success']]
 
         success_count = len(successful_results)
         success_rate = round(success_count / total_requests * 100, 2) if total_requests > 0 else 0
@@ -716,7 +708,7 @@ class SerpAPITester:
                 p99_latency = get_percentile_value(response_times, 0.99)
 
         request_rate = round(total_requests / total_duration, 3) if total_duration > 0 else 0
-        error_rate = self._compute_error_rate(success_count, total_requests)
+        error_rate = round((total_requests - success_count) / total_requests * 100, 2) if total_requests > 0 else 0
 
         avg_response_size = 0
         if successful_results:
