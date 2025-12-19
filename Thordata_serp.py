@@ -569,6 +569,8 @@ class SerpAPITester:
         Returns:
             tuple: (所有请求结果, 总耗时, 总请求数)
         """
+        if concurrency <= 0:
+            raise ValueError("并发数必须大于0")
         results = []
         start_monotonic = time.perf_counter()
         end_time = start_monotonic + duration_seconds
